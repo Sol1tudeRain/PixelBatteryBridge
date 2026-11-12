@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.Set;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
+import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
@@ -30,39 +31,64 @@ public final class BridgeHook implements IXposedHookLoadPackage {
     private static final String TAG = "PixelBatteryBridge";
 
     @Override
-    public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
+    public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!APP.equals(lpparam.packageName)) return;
-        XposedHelpers.findAndHookMethod(
-            "android.app.ContextImpl", lpparam.classLoader,
-            "sendBroadcast", Intent.class,
-            new XC_MethodHook() {
+        // Emit a marker BEFORE trying to resolve/hook Android framework classes.
+        // This distinguishes scope/entrypoint failures from hook registration failures.
+        diag("v0.2 entry: package=" + lpparam.packageName +
+             " process=" + lpparam.processName);
+        try {
+            XC_MethodHook callback = new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
                     try {
+                        if (param.args.length == 0 || !(param.args[0] instanceof Intent)) return;
                         Intent intent = (Intent) param.args[0];
-                        if (intent == null || !ACTION.equals(intent.getAction()) ||
+                        if (!ACTION.equals(intent.getAction()) ||
                             !"com.android.settings".equals(intent.getPackage())) return;
+                        diag("Observed FETCH_BLUETOOTH_BATTERY_DATA request");
                         ResultReceiver receiver = intent.getParcelableExtra(
                             EXTRA_RECEIVER, ResultReceiver.class);
                         if (receiver == null) {
-                            Log.w(TAG, "Missing ResultReceiver; falling through");
+                            diag("Missing ResultReceiver; allowing original broadcast");
                             return;
                         }
                         Bundle answer = collectBluetooth();
                         receiver.send(0, answer);
-                        // Only suppress this one request, avoiding an unnecessary
-                        // broadcast to the missing ROM implementation.
                         param.setResult(null);
-                        Log.i(TAG, "Replied with " +
+                        diag("Replied with " +
                             answer.getStringArrayList("bluetoothAddressListKey").size() +
                             " devices");
                     } catch (Throwable ex) {
                         Log.e(TAG, "Bluetooth bridge error; allowing original request", ex);
+                        XposedBridge.log(ex);
                     }
                 }
+            };
+            XposedHelpers.findAndHookMethod(
+                "android.app.ContextImpl", lpparam.classLoader,
+                "sendBroadcast", Intent.class, callback
+            );
+            diag("Installed hook: ContextImpl.sendBroadcast(Intent)");
+            // Some app/framework builds call the overload with a permission argument.
+            try {
+                XposedHelpers.findAndHookMethod(
+                    "android.app.ContextImpl", lpparam.classLoader,
+                    "sendBroadcast", Intent.class, String.class, callback
+                );
+                diag("Installed hook: ContextImpl.sendBroadcast(Intent,String)");
+            } catch (Throwable optional) {
+                diag("Optional two-arg overload unavailable: " + optional.getClass().getSimpleName());
             }
-        );
-        Log.i(TAG, "Installed hook in " + APP);
+        } catch (Throwable ex) {
+            diag("FAILED installing hook: " + ex.getClass().getName() + ": " + ex.getMessage());
+            XposedBridge.log(ex);
+        }
+    }
+
+    private static void diag(String message) {
+        Log.i(TAG, message);
+        XposedBridge.log(TAG + ": " + message);
     }
 
     private static Bundle collectBluetooth() {
