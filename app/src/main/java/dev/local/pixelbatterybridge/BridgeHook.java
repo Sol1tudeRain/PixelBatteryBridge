@@ -25,7 +25,7 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
- * Experimental PixelOS bridge v0.3. No system APK replacement.
+ * Experimental PixelOS bridge v0.4. No system APK replacement.
  * Captures Android's Bluetooth battery-change broadcasts as a fallback for
  * BluetoothDevice.getBatteryLevel(), which can report an unknown level (-1).
  * This is NOT a verified fix; review logs before further changes.
@@ -49,7 +49,7 @@ public final class BridgeHook implements IXposedHookLoadPackage {
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!APP.equals(lpparam.packageName)) return;
-        diag("v0.3 entry: process=" + lpparam.processName);
+        diag("v0.4 entry: process=" + lpparam.processName);
 
         try {
             XposedHelpers.findAndHookMethod("android.app.Application", lpparam.classLoader,
@@ -195,8 +195,17 @@ public final class BridgeHook implements IXposedHookLoadPackage {
                 aliases.add(name);
                 names.add(name);
                 classes.add(dev.getBluetoothClass());
-                levels.add(Integer.toString(level));
-                charging.add("false");
+                // Google's lvk.onReceiveResult() reads four battery values and
+                // four charging flags for each device, in this exact order:
+                // main, case, left, right. Missing values must still occupy slots.
+                levels.add(Integer.toString(level)); // main
+                levels.add("-1");                 // case unknown
+                levels.add("-1");                 // left unknown
+                levels.add("-1");                 // right unknown
+                charging.add("false");            // main
+                charging.add("false");            // case
+                charging.add("false");            // left
+                charging.add("false");            // right
             } catch (Throwable t) {
                 diag("Candidate processing failed: " + t.getClass().getSimpleName());
             }
